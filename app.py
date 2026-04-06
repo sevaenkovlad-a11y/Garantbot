@@ -9,7 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = os.environ.get 8646214027:AAGIL9oAld6OEaUKH4m1x6pSyKDQlHo-IB4
+TOKEN = os.environ.get("BOT_TOKEN", "8688157669:AAErY2kU6hc8urroCoJrq5FEjz1OQGw96uo")
 ADMIN_IDS = [7256797875]
 
 PRICE_DELETE = 100
