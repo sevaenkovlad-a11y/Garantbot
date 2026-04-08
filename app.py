@@ -2,7 +2,6 @@ import logging
 import sqlite3
 import asyncio
 import os
-import threading
 from datetime import datetime
 from flask import Flask, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -23,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 flask_app = Flask(__name__)
 
+# База данных
 db = sqlite3.connect("guarant_bot.db", check_same_thread=False)
 cursor = db.cursor()
 
@@ -87,15 +87,6 @@ def add_deal(deal_name, amount, network, conditions, user_id, user_username, rol
     db.commit()
     return cursor.lastrowid
 
-def get_deal(deal_id):
-    cursor.execute("SELECT * FROM deals WHERE id = ?", (deal_id,))
-    return cursor.fetchone()
-
-def update_deal(deal_id, **kwargs):
-    for key, value in kwargs.items():
-        cursor.execute(f"UPDATE deals SET {key} = ? WHERE id = ?", (value, deal_id))
-    db.commit()
-
 def get_pending_deals_for_user(user_id):
     cursor.execute("SELECT * FROM deals WHERE (buyer_id = ? OR seller_id = ?) AND status = 'pending' ORDER BY id DESC", (user_id, user_id))
     return cursor.fetchall()
@@ -124,27 +115,29 @@ def confirm_payment(payment_id):
     cursor.execute("UPDATE payments SET status = 'completed' WHERE id = ?", (payment_id,))
     db.commit()
 
+def update_deal(deal_id, **kwargs):
+    for key, value in kwargs.items():
+        cursor.execute(f"UPDATE deals SET {key} = ? WHERE id = ?", (value, deal_id))
+    db.commit()
+
 def get_all_deals():
     cursor.execute("SELECT * FROM deals ORDER BY id DESC LIMIT 50")
     return cursor.fetchall()
 
-def get_deals_stats():
+def get_all_users():
+    cursor.execute("SELECT user_id, username, registered_at FROM users ORDER BY registered_at DESC LIMIT 20")
+    return cursor.fetchall()
+
+def get_stats():
     cursor.execute("SELECT COUNT(*) FROM deals")
     total_deals = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM deals WHERE status = 'completed'")
     completed_deals = cursor.fetchone()[0]
     cursor.execute("SELECT SUM(amount) FROM deals WHERE status = 'completed'")
     total_volume = cursor.fetchone()[0] or 0
-    return {"total_deals": total_deals, "completed_deals": completed_deals, "total_volume": total_volume}
+    return total_deals, completed_deals, total_volume
 
-async def send_message(user_id, text, reply_markup=None):
-    try:
-        from telegram import Bot
-        bot = Bot(token=TOKEN)
-        await bot.send_message(chat_id=user_id, text=text, reply_markup=reply_markup, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Ошибка отправки: {e}")
-
+# ========== КЛАВИАТУРЫ ==========
 def main_menu():
     kb = [
         [InlineKeyboardButton("🛡️ Заключить сделку", callback_data="new_deal")],
@@ -172,6 +165,7 @@ def admin_keyboard():
     ]
     return InlineKeyboardMarkup(kb)
 
+# ========== ОБРАБОТЧИКИ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(user.id, user.username, user.full_name)
@@ -254,60 +248,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer(f"✅ Адрес скопирован!", show_alert=True)
         return
 
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("⛔ Нет доступа!")
-        return
-    await update.message.reply_text("🔐 *АДМИН-ПАНЕЛЬ*", reply_markup=admin_keyboard(), parse_mode="Markdown")
-
-async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    if update.effective_user.id not in ADMIN_IDS:
-        await query.edit_message_text("⛔ Нет доступа!")
-        return
-
+    # ========== АДМИН-ПАНЕЛЬ ==========
     if data == "admin_stats":
-        stats = get_deals_stats()
-        text = f"📊 *СТАТИСТИКА*\n\n📋 Всего сделок: {stats['total_deals']}\n✅ Завершено: {stats['completed_deals']}\n💰 Общий объём: {stats['total_volume']} USDT"
+        total, completed, volume = get_stats()
+        text = f"📊 *СТАТИСТИКА*\n\n📋 Всего сделок: {total}\n✅ Завершено: {completed}\n💰 Объём: {volume} USDT"
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=admin_keyboard())
         return
 
     if data == "admin_payments":
         payments = get_pending_payments()
         if not payments:
-            await query.edit_message_text("💳 Нет ожидающих платежей.", reply_markup=admin_keyboard())
+            await query.edit_message_text("💳 Нет платежей.", reply_markup=admin_keyboard())
             return
         text = "💳 *ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ:*\n\n"
         kb = []
         for p in payments:
-            pid, deal_id, user_id, amount, network, deal_name, buyer_id, seller_id = p
-            text += f"📌 Платеж #{pid}\n├ Сделка: {deal_name} (#{deal_id})\n├ Сумма: {amount} {network}\n├ Покупатель: {buyer_id}\n└ Продавец: {seller_id}\n\n"
-            kb.append([InlineKeyboardButton(f"✅ Подтвердить платеж #{pid}", callback_data=f"admin_confirm_payment_{pid}")])
+            pid, deal_id, uid, amt, net, dname, buyer, seller = p
+            text += f"📌 Платеж #{pid}\n├ Сделка: {dname}\n├ Сумма: {amt} {net}\n├ Покупатель: {buyer}\n└ Продавец: {seller}\n\n"
+            kb.append([InlineKeyboardButton(f"✅ Подтвердить #{pid}", callback_data=f"confirm_payment_{pid}")])
         kb.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
         return
 
-    if data.startswith("admin_confirm_payment_"):
-        payment_id = int(data.split("_")[3])
-        cursor.execute("""
-            SELECT p.deal_id, p.user_id, p.amount, d.buyer_id, d.seller_id, d.deal_name
-            FROM payments p
-            JOIN deals d ON p.deal_id = d.id
-            WHERE p.id = ?
-        """, (payment_id,))
-        payment = cursor.fetchone()
-        if payment:
-            deal_id, payer_id, amount, buyer_id, seller_id, deal_name = payment
+    if data.startswith("confirm_payment_"):
+        payment_id = int(data.split("_")[2])
+        cursor.execute("SELECT deal_id, user_id, amount, buyer_id, seller_id, deal_name FROM payments p JOIN deals d ON p.deal_id = d.id WHERE p.id=?", (payment_id,))
+        pay = cursor.fetchone()
+        if pay:
+            deal_id, payer_id, amount, buyer_id, seller_id, deal_name = pay
             confirm_payment(payment_id)
-            update_deal(deal_id, payment_status="completed", status="completed", completed_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
-            await send_message(seller_id, f"✅ *ПЛАТЕЖ ПОДТВЕРЖДЁН!*\n\n📋 Сделка: {deal_name} (#{deal_id})\n💰 Сумма: {amount} USDT\n\n🔄 Сделка завершена!", main_menu())
-            await send_message(payer_id, f"✅ *ВАШ ПЛАТЕЖ ПОДТВЕРЖДЁН!*\n\n📋 Сделка: {deal_name} (#{deal_id})\n💰 Сумма: {amount} USDT\n\n✅ Сделка успешно завершена!", main_menu())
-            await query.edit_message_text(f"✅ Платеж #{payment_id} подтверждён!\n📢 Уведомления отправлены.", reply_markup=admin_keyboard())
+            update_deal(deal_id, status="completed", completed_at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+            await query.edit_message_text(f"✅ Платеж #{payment_id} подтверждён!", reply_markup=admin_keyboard())
         else:
-            await query.edit_message_text("❌ Платёж не найден!", reply_markup=admin_keyboard())
+            await query.edit_message_text("❌ Платёж не найден.", reply_markup=admin_keyboard())
         return
 
     if data == "admin_deals":
@@ -316,18 +289,17 @@ async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("📋 Нет сделок.", reply_markup=admin_keyboard())
             return
         text = "📋 *ВСЕ СДЕЛКИ:*\n\n"
-        for deal in deals[:20]:
-            text += f"┌ 🆔 #{deal[0]}\n├ 📝 {deal[1]}\n├ 💰 {deal[2]} USDT\n├ 📊 {deal[10]}\n└ 📅 {deal[13]}\n\n"
+        for d in deals[:20]:
+            text += f"┌ #{d[0]} | {d[1]}\n├ 💰 {d[2]} USDT\n├ 📊 {d[10]}\n└ 📅 {d[13]}\n\n"
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=admin_keyboard())
         return
 
     if data == "admin_users":
-        cursor.execute("SELECT user_id, username, registered_at FROM users ORDER BY registered_at DESC LIMIT 20")
-        users = cursor.fetchall()
+        users = get_all_users()
         if not users:
             await query.edit_message_text("👥 Нет пользователей.", reply_markup=admin_keyboard())
             return
-        text = "👥 *ПОСЛЕДНИЕ ПОЛЬЗОВАТЕЛИ:*\n\n"
+        text = "👥 *ПОЛЬЗОВАТЕЛИ:*\n\n"
         for u in users:
             text += f"┌ 🆔 {u[0]}\n├ 📝 @{u[1] or 'нет'}\n└ 📅 {u[2]}\n\n"
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=admin_keyboard())
@@ -346,18 +318,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == 'deal_name':
         context.user_data['deal_name'] = text
         context.user_data['deal_step'] = 'deal_amount'
-        await update.message.reply_text("💰 *Шаг 2/5: Сумма сделки*\n\nВведите сумму в USDT (минимальная сумма 10 USDT):", parse_mode="Markdown")
+        await update.message.reply_text("💰 *Шаг 2/5: Сумма сделки*\n\nВведите сумму в USDT (мин. 10 USDT):", parse_mode="Markdown")
         return
 
     if step == 'deal_amount':
         try:
             amount = float(text)
             if amount < 10:
-                await update.message.reply_text("❌ Минимальная сумма 10 USDT. Введите снова:")
+                await update.message.reply_text("❌ Минимум 10 USDT. Введите снова:")
                 return
             context.user_data['deal_amount'] = amount
             context.user_data['deal_step'] = 'deal_role'
-            await update.message.reply_text("👥 *Шаг 3/5: Выберите вашу роль в сделке*", reply_markup=role_keyboard(), parse_mode="Markdown")
+            await update.message.reply_text("👥 *Шаг 3/5: Выберите вашу роль*", reply_markup=role_keyboard(), parse_mode="Markdown")
         except:
             await update.message.reply_text("❌ Введите число!")
         return
@@ -379,29 +351,47 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📝 Название: {context.user_data.get('deal_name')}\n"
             f"💰 Сумма: {context.user_data.get('deal_amount')} USDT\n"
             f"🌐 Сеть: {context.user_data.get('deal_network')}\n\n"
-            f"⏳ Ожидайте подтверждения от администратора.",
+            f"⏳ Ожидайте оплаты и подтверждения.",
             reply_markup=main_menu(), parse_mode="Markdown"
         )
         return
 
     await update.message.reply_text("Используйте кнопки меню!", reply_markup=main_menu())
 
-def run_bot():
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Нет доступа!")
+        return
+    await update.message.reply_text("🔐 *АДМИН-ПАНЕЛЬ*", reply_markup=admin_keyboard(), parse_mode="Markdown")
+
+# ========== ЗАПУСК ==========
+async def run_bot():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_panel))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(?!admin_).*"))
-    app.add_handler(CallbackQueryHandler(admin_callback, pattern="^admin_.*"))
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    
     print("✅ Бот запущен и работает!")
-    app.run_polling()
+    await app.run_polling()
 
 @flask_app.route('/')
 def health_check():
     return jsonify({"status": "ok", "message": "Bot is running"}), 200
 
 if __name__ == "__main__":
-    bot_thread = threading.Thread(target=run_bot)
+    # Создаём новый event loop и запускаем бота
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Запускаем бота в фоне
+    def start_bot():
+        loop.run_until_complete(run_bot())
+    
+    import threading
+    bot_thread = threading.Thread(target=start_bot)
     bot_thread.start()
+    
+    # Запускаем Flask
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
