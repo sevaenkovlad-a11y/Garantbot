@@ -366,13 +366,10 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЗАПУСК ==========
 def run_bot():
-    """Запуск бота в отдельном потоке с правильным event loop"""
     try:
-        # Создаём новый event loop
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
-        # Создаём приложение
         app = Application.builder().token(TOKEN).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("admin", admin_panel))
@@ -381,12 +378,9 @@ def run_bot():
         
         print("✅ Бот запущен и работает!")
         
-        # Запускаем бота
         loop.run_until_complete(app.initialize())
         loop.run_until_complete(app.start())
         loop.run_until_complete(app.updater.start_polling())
-        
-        # Держим бота запущенным
         loop.run_forever()
     except Exception as e:
         print(f"Ошибка: {e}")
@@ -398,11 +392,8 @@ def health_check():
     return jsonify({"status": "ok", "message": "Bot is running"}), 200
 
 if __name__ == "__main__":
-    # Запускаем бота в отдельном потоке
     import threading
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
-    
-    # Запускаем Flask сервер
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)
