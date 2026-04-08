@@ -8,7 +8,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = "8688157669:AAErY2kU6hc8urroCoJrq5FEjz1OQGw96uo"
+TOKEN = "TOKEN = "8688157669:AAErY2kU6hc8urroCoJrq5FEjz1OQGw96uo""
 ADMIN_IDS = [7256797875]
 
 ADDRESSES = {
